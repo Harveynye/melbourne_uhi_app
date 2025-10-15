@@ -1,214 +1,85 @@
-
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>Melbourne LGAs — UHI, Vegetation %, and Age 65+</title>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
   <style>
     html,body,#map{height:100%;margin:0}
-    .info-popup table{border-collapse:collapse;font:14px/1.2 system-ui, sans-serif}
-    .legend, .metric {background:#fff;padding:8px 10px;border-radius:6px;box-shadow:0 1px 4px rgba(0,0,0,.1);font:14px/1.2 system-ui,sans-serif}
+    .legend, .metric, .title {
+      background:#fff;padding:8px 10px;border-radius:6px;
+      box-shadow:0 1px 4px rgba(0,0,0,.1);font:14px/1.2 system-ui, sans-serif
+    }
     .legend i{display:inline-block;width:12px;height:12px;margin-right:6px;vertical-align:middle}
     .metric {position:absolute;right:10px;top:10px;z-index:1000}
     .legend {position:absolute;left:10px;bottom:10px;z-index:1000}
-    .info-popup table{border-collapse:collapse}
+    .title  {position:absolute;left:50%;top:10px;transform:translateX(-50%);z-index:1000;font-weight:600}
+    .info-popup table{border-collapse:collapse;font:14px/1.2 system-ui, sans-serif}
     .info-popup td{padding:2px 6px;border-bottom:1px solid #eee}
     .info-popup td:first-child{font-weight:600;color:#555}
   </style>
+</head>
+<body>
+<div id="map"></div>
 
+<!-- UI overlays -->
+<div class="title">Melbourne LGAs — UHI, Vegetation %, and Age 65+</div>
+<div class="metric">
+  <label><strong>Metric</strong></label><br>
+  <select id="metricSel">
+    <option value="heat">Heat (UHI mean)</option>
+    <option value="veg">Vegetation %</option>
+    <option value="age">Age 65+ (count)</option>
+  </select>
+</div>
+<div id="legend" class="legend"></div>
 
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 <script>
-  // --- CONFIG ---
-  const GEOSERVER_WMS = 'http://localhost:8080/geoserver/uhi_app/wms';
-  const LAYER_NAME    = 'uhi_app:lga_with_uhi_veg_final';
-
-  // Base map
-  // --- Map ---
+  // ---- Map ----
   const map = L.map('map').setView([-37.8, 144.9], 9);
   L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',
-    { attribution: '© OpenStreetMap contributors' }).addTo(map);
+    { attribution:'© OpenStreetMap contributors' }).addTo(map);
 
-  // Three WMS styles as toggleable overlays
-  const baseWmsOpts = {
-    layers: LAYER_NAME,
-    format: 'image/png',
-    transparent: true,
-    version: '1.3.0' // important for I/J vs X/Y
-  // --- Metric selector (heat / veg / age) ---
+  // ---- Metrics (fields, breaks, colors, formatting) ----
   const metrics = {
     heat: { field:'uhi18_m_mean', title:'Heat (UHI mean)',
-      breaks:[7.5,8.2,8.9,9.6], colors:['#ffffcc','#ffe082','#fdae61','#f46d43','#d73027'],
+      breaks:[7.5, 8.2, 8.9, 9.6],
+      colors:['#ffffcc','#ffe082','#fdae61','#f46d43','#d73027'],
       fmt:v=>v==null?'-':Number(v).toFixed(2)
     },
     veg:  { field:'peranyveg_mean', title:'Vegetation %',
-      breaks:[10,20,30,40], colors:['#f7fcf5','#c7e9c0','#74c476','#238b45','#00441b'],
+      breaks:[10, 20, 30, 40],
+      colors:['#f7fcf5','#c7e9c0','#74c476','#238b45','#00441b'],
       fmt:v=>v==null?'-':Number(v).toFixed(2)
     },
     age:  { field:'persons_65plus', title:'Age 65+ (count)',
-      breaks:[5000,10000,15000,20000], colors:['#f2f0f7','#cbc9e2','#9e9ac8','#756bb1','#54278f'],
+      breaks:[5000, 10000, 15000, 20000],
+      colors:['#f2f0f7','#cbc9e2','#9e9ac8','#756bb1','#54278f'],
       fmt:v=>v==null?'-':v
     }
   };
-  const heat = L.tileLayer.wms(GEOSERVER_WMS, { ...baseWmsOpts, styles: 'heat_simple' }).addTo(map);
-  const veg  = L.tileLayer.wms(GEOSERVER_WMS, { ...baseWmsOpts, styles: 'veg_simple'  });
-  const age  = L.tileLayer.wms(GEOSERVER_WMS, { ...baseWmsOpts, styles: 'age65_counts' });
-
-  L.control.layers(null, {
-    'Heat (UHI mean)': heat,
-    'Vegetation %'   : veg,
-    'Age 65+ (count)': age
-  }, { collapsed:false }).addTo(map);
   let current = 'heat';
 
-  // --- GetFeatureInfo helper ---
-  function getFeatureInfoUrl(latlng, layer, map) {
-    // Build a WMS GetFeatureInfo request for the clicked pixel
-    const point = map.latLngToContainerPoint(latlng, map.getZoom());
-    const size  = map.getSize();
-
-    // Common params
-    const params = {
-      request: 'GetFeatureInfo',
-      service: 'WMS',
-      srs: 'EPSG:4326',
-      styles: layer.wmsParams.styles || '',
-      transparent: true,
-      version: layer.wmsParams.version,
-      format: layer.wmsParams.format,
-      bbox: map.getBounds().toBBoxString(),        
-      height: size.y,
-      width: size.x,
-      layers: layer.wmsParams.layers,
-      query_layers: layer.wmsParams.layers,
-      info_format: 'application/json',             
-      feature_count: 5
-    };
-  // UI: metric dropdown
-  const metricCtl = L.control({position:'topright'});
-  metricCtl.onAdd = () => {
-    const d = L.DomUtil.create('div','metric');
-    d.innerHTML = `
-      <label><strong>Metric</strong></label><br>
-      <select id="metricSel">
-        <option value="heat">Heat (UHI mean)</option>
-        <option value="veg">Vegetation %</option>
-        <option value="age">Age 65+ (count)</option>
-      </select>`;
-    return d;
-  };
-  metricCtl.addTo(map);
-  document.addEventListener('change', e=>{
-    if(e.target && e.target.id==='metricSel'){ current = e.target.value; restyle(); updateLegend(); }
-  });
-
-    // WMS 1.3.0 uses I/J; 1.1.1 uses X/Y
-    if (params.version === '1.3.0') {
-      params.i = Math.trunc(point.x);
-      params.j = Math.trunc(point.y);
-    } else {
-      params.x = Math.trunc(point.x);
-      params.y = Math.trunc(point.y);
-    }
-  // Legend
-  const legend = L.control({position:'bottomleft'});
-  legend.onAdd = () => {
-    const d = L.DomUtil.create('div','legend');
-    d.id = 'legend';
-    return d;
-  };
-  legend.addTo(map);
-
-    const url = GEOSERVER_WMS + L.Util.getParamString(params, GEOSERVER_WMS, true);
-    return url;
-  // Color helper
+  // ---- Helpers ----
   function colorFor(v, brks, colors){
-    if(v==null) return '#cccccc';
-    for(let i=0;i<brks.length;i++){ if(v<=brks[i]) return colors[i]; }
+    if (v==null || isNaN(v)) return '#cccccc';
+    for(let i=0;i<brks.length;i++){
+      if(v<=brks[i]) return colors[i];
+    }
     return colors[colors.length-1];
   }
 
-  function formatPopup(props) {
-    // fields 
-    const name   = props.lga_name;
-    const heat   = props.uhi18_m_mean;
-    const veg    = props.peranyveg_mean;
-    const age65  = props.persons_65plus;
-
-  // Popup formatter
   function popupHtml(p){
     return `
       <div class="info-popup">
         <table>
-          <tr><td>LGA</td><td>${name ?? '-'}</td></tr>
-          <tr><td>UHI mean</td><td>${heat != null ? Number(heat).toFixed(2) : '-'}</td></tr>
-          <tr><td>Vegetation %</td><td>${veg != null ? Number(veg).toFixed(2) : '-'}</td></tr>
-          <tr><td>65+ (count)</td><td>${age65 ?? '-'}</td></tr>
           <tr><td>LGA</td><td>${p.lga_name ?? '-'}</td></tr>
           <tr><td>UHI mean</td><td>${metrics.heat.fmt(p.uhi18_m_mean)}</td></tr>
           <tr><td>Vegetation %</td><td>${metrics.veg.fmt(p.peranyveg_mean)}</td></tr>
           <tr><td>65+ (count)</td><td>${metrics.age.fmt(p.persons_65plus)}</td></tr>
         </table>
       </div>`;
-  }
-
- 
-  function activeOverlay() {
-    // overlay among heat, veg, age 
-    if (map.hasLayer(veg))  return veg;
-    if (map.hasLayer(age))  return age;
-    return heat;
-  }
-
-  map.on('click', async (e) => {
-    const layer = activeOverlay();
-    const url = getFeatureInfoUrl(e.latlng, layer, map);
-  let geoLayer = null, geojson = null;
-
-    try {
-      const res = await fetch(url);
-      
-  // Load GeoJSON from your repo (adjust path if you put it in /data/)
-  fetch('lga_uhi_app.geojson')
-    .then(r => r.json())
-    .then(data => {
-      geojson = data;
-      addLayer();
-      updateLegend();
-      try { map.fitBounds(L.geoJSON(geojson).getBounds()); } catch(_) {}
-    })
-    .catch(err => {
-      console.error('Failed to load GeoJSON:', err);
-      alert('Could not load GeoJSON. Make sure lga_uhi_app.geojson is in the repo root.');
-    });
-
-      const json = await res.json();
-      const first = json.features && json.features[0];
-      if (!first) {
-        L.popup().setLatLng(e.latlng).setContent('No feature here.').openOn(map);
-        return;
-  function addLayer(){
-    if(geoLayer) map.removeLayer(geoLayer);
-    geoLayer = L.geoJSON(geojson, {
-      style: feat => {
-        const m = metrics[current];
-        const v = feat.properties[m.field];
-        return { color:'#666', weight:0.6, fillOpacity:0.85,
-          fillColor: colorFor(v, m.breaks, m.colors) };
-      },
-      onEachFeature: (feat, layer) => {
-        layer.on('click', () => layer.bindPopup(popupHtml(feat.properties)).openPopup());
-      }
-      const html = formatPopup(first.properties || {});
-      L.popup().setLatLng(e.latlng).setContent(html).openOn(map);
-    } catch (err) {
-      L.popup().setLatLng(e.latlng).setContent('GetFeatureInfo error').openOn(map);
-      console.error(err);
-    }).addTo(map);
-  }
-
-  function restyle(){
-    if(!geoLayer) return;
-    geoLayer.setStyle(feat => {
-      const m = metrics[current];
-      const v = feat.properties[m.field];
-      return { fillColor: colorFor(v, m.breaks, m.colors) };
-    });
   }
 
   function updateLegend(){
@@ -221,16 +92,79 @@
       labels.push(`<div><i style="background:${m.colors[i]}"></i>${prev===-Infinity?'≤ ':''}${to}</div>`);
       prev = to;
     }
-  });
     labels.push(`<div><i style="background:${m.colors[m.colors.length-1]}"></i>&gt; ${m.breaks[m.breaks.length-1]}</div>`);
     d.innerHTML = `<strong>${m.title}</strong><br>${labels.join('')}`;
   }
+
+  // ---- Data layer ----
+  let geojson = null;
+  let geoLayer = null;
+
+  function addLayer(){
+    if (geoLayer) { map.removeLayer(geoLayer); geoLayer = null; }
+    geoLayer = L.geoJSON(geojson, {
+      style: feat => {
+        const m = metrics[current];
+        const v = feat.properties[m.field];
+        return { color:'#666', weight:0.6, fillOpacity:0.85,
+                 fillColor: colorFor(v, m.breaks, m.colors) };
+      },
+      onEachFeature: (feat, layer) => {
+        layer.on('click', () => layer.bindPopup(popupHtml(feat.properties)).openPopup());
+      }
+    }).addTo(map);
+  }
+
+  function restyle(){
+    if (!geoLayer) return;
+    const m = metrics[current];
+    geoLayer.setStyle(feat => {
+      const v = feat.properties[m.field];
+      return { fillColor: colorFor(v, m.breaks, m.colors) };
+    });
+  }
+
+  // ---- Load GeoJSON (from repo root) ----
+  // Bump cache-buster (?v=) if you update the file.
+  fetch('lga_uhi_app.geojson?v=10', { cache:'no-store' })
+    .then(r => {
+      if (!r.ok) throw new Error(`GeoJSON HTTP ${r.status}`);
+      return r.json();
+    })
+    .then(data => {
+      if (!data || data.type !== 'FeatureCollection') throw new Error('Invalid GeoJSON');
+      geojson = data;
+      addLayer();
+      updateLegend();
+      try { map.fitBounds(L.geoJSON(geojson).getBounds()); } catch(_) {}
+    })
+    .catch(err => {
+      console.error('Failed to load GeoJSON:', err);
+      alert('Could not load GeoJSON. Make sure lga_uhi_app.geojson is in the repo root.');
+      // Fallback test polygon so UI still shows something
+      geojson = {"type":"FeatureCollection","features":[{
+        "type":"Feature",
+        "properties":{"lga_name":"TEST CBD","uhi18_m_mean":8.7,"peranyveg_mean":22.5,"persons_65plus":1234},
+        "geometry":{"type":"Polygon","coordinates":[[[144.952,-37.821],[144.986,-37.821],[144.986,-37.805],[144.952,-37.805],[144.952,-37.821]]]}}
+      ]};
+      addLayer(); updateLegend();
+      try { map.fitBounds(L.geoJSON(geojson).getBounds()); } catch(_) {}
+    });
+
+  // ---- Metric dropdown handler ----
+  document.getElementById('metricSel').addEventListener('change', e => {
+    current = e.target.value;
+    restyle();
+    updateLegend();
+  });
 </script>
 
 <!-- License / attribution -->
 <p style="position:absolute;left:8px;bottom:6px;background:#fff7;padding:4px 8px;border-radius:4px;">
-<!-- Attribution & license -->
-<p style="position:absolute;left:8px;top:10px;background:#fff7;padding:4px 8px;border-radius:4px;">
   <a href="https://creativecommons.org/licenses/by/4.0/" target="_blank" rel="license noopener">
     <img src="https://licensebuttons.net/l/by/4.0/88x31.png" alt="CC BY 4.0" style="vertical-align:middle">
   </a>
+  <span style="margin-left:8px;">This Cloud-based Open-source GIS Application is developed by <a href="#" target="_blank" rel="noopener">Your Name</a> — CC BY 4.0</span>
+</p>
+</body>
+</html>
