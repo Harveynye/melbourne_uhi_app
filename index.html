@@ -6,17 +6,21 @@
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
   <style>
     html,body,#map{height:100%;margin:0}
-    .legend, .metric, .title {
+    .legend, .metric, .title, .search {
       background:#fff;padding:8px 10px;border-radius:6px;
       box-shadow:0 1px 4px rgba(0,0,0,.1);font:14px/1.2 system-ui, sans-serif
     }
     .legend i{display:inline-block;width:12px;height:12px;margin-right:6px;vertical-align:middle}
+    .title  {position:absolute;left:50%;top:10px;transform:translateX(-50%);z-index:1000;font-weight:600}
     .metric {position:absolute;right:10px;top:10px;z-index:1000}
     .legend {position:absolute;left:10px;bottom:10px;z-index:1000}
-    .title  {position:absolute;left:50%;top:10px;transform:translateX(-50%);z-index:1000;font-weight:600}
+    .search {position:absolute;right:10px;top:72px;z-index:1000;width:280px}
+    .search input{width:100%;padding:6px 8px;border:1px solid #ccc;border-radius:4px}
     .info-popup table{border-collapse:collapse;font:14px/1.2 system-ui, sans-serif}
     .info-popup td{padding:2px 6px;border-bottom:1px solid #eee}
     .info-popup td:first-child{font-weight:600;color:#555}
+    /* print button style (top-left) from easyPrint is fine; we just lift it slightly */
+    .leaflet-control-easyPrint {margin-top:10px}
   </style>
 </head>
 <body>
@@ -32,14 +36,30 @@
     <option value="age">Age 65+ (count)</option>
   </select>
 </div>
+<div class="search">
+  <label><strong>Find LGA</strong></label>
+  <input id="searchBox" type="text" placeholder="Type LGA name and press Enter" />
+</div>
 <div id="legend" class="legend"></div>
 
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<!-- Save to PNG -->
+<script src="https://unpkg.com/leaflet-easyprint@2.1.9/dist/bundle.min.js"></script>
+
 <script>
   // ---- Map ----
   const map = L.map('map').setView([-37.8, 144.9], 9);
   L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',
     { attribution:'© OpenStreetMap contributors' }).addTo(map);
+
+  // Save PNG button
+  L.easyPrint({
+    title: 'Save PNG',
+    position: 'topleft',
+    sizeModes: ['Current','A4Landscape','A4Portrait'],
+    exportOnly: true,
+    hideControlContainer: false
+  }).addTo(map);
 
   // ---- Metrics (fields, breaks, colors, formatting) ----
   const metrics = {
@@ -99,6 +119,7 @@
   // ---- Data layer ----
   let geojson = null;
   let geoLayer = null;
+  let highlight;     // temporary highlight for search
 
   function addLayer(){
     if (geoLayer) { map.removeLayer(geoLayer); geoLayer = null; }
@@ -125,7 +146,6 @@
   }
 
   // ---- Load GeoJSON (from repo root) ----
-  // Bump cache-buster (?v=) if you update the file.
   fetch('lga_uhi_app.geojson?v=10', { cache:'no-store' })
     .then(r => {
       if (!r.ok) throw new Error(`GeoJSON HTTP ${r.status}`);
@@ -157,8 +177,42 @@
     restyle();
     updateLegend();
   });
-</script>
 
+  // ---- Search (zoom to LGA by name) ----
+  const searchBox = document.getElementById('searchBox');
+  searchBox.addEventListener('keydown', (e) => {
+    if (e.key !== 'Enter') return;
+    const q = searchBox.value.trim().toLowerCase();
+    if (!q || !geoLayer) return;
+
+    let matchLayer = null;
+    geoLayer.eachLayer(l => {
+      const name = (l.feature?.properties?.lga_name || '').toLowerCase();
+      if (!matchLayer && name.includes(q)) matchLayer = l;
+    });
+
+    if (!matchLayer) { alert('No matching LGA'); return; }
+
+    // Zoom to and highlight the match briefly
+    map.fitBounds(matchLayer.getBounds(), { maxZoom: 11 });
+    if (highlight) { map.removeLayer(highlight); }
+    highlight = L.geoJSON(matchLayer.feature, {
+      style: { color:'#000', weight:3, fillOpacity:0 }
+    }).addTo(map);
+    setTimeout(() => { if(highlight){ map.removeLayer(highlight); highlight=null; }}, 2000);
+    matchLayer.bindPopup(popupHtml(matchLayer.feature.properties)).openPopup();
+  });
+</script>
+  
+<iframe
+  src="https://harveynye.github.io/melbourne_uhi_app/"
+  width="100%"
+  height="640"
+  style="border:0"
+  loading="eager"
+  allowfullscreen>
+</iframe>
+  
 <!-- License / attribution -->
 <p style="position:absolute;left:8px;bottom:6px;background:#fff7;padding:4px 8px;border-radius:4px;">
   <a href="https://creativecommons.org/licenses/by/4.0/" target="_blank" rel="license noopener">
