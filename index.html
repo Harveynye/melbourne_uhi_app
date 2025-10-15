@@ -1,0 +1,333 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>Melbourne LGAs — UHI • Vegetation • Age 65+</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+  <style>
+    html,body,#map{height:100%;margin:0}
+    /* Title */
+    .app-title{
+      position:absolute;left:50%;top:10px;transform:translateX(-50%);
+      background:#ffffffd9;border-radius:10px;padding:8px 14px;z-index:1001;
+      font:600 15px/1.1 system-ui,-apple-system,Segoe UI,Roboto,Arial,sans-serif;
+      box-shadow:0 2px 8px rgba(0,0,0,.12)
+    }
+    .legend, .metric, .search, .printbtn, .embedbtn {
+      background:#fff;padding:8px 10px;border-radius:6px;box-shadow:0 1px 4px rgba(0,0,0,.1);
+      font:14px/1.2 system-ui,sans-serif
+    }
+    .legend {position:absolute;left:10px;bottom:10px;z-index:1000}
+    .metric {position:absolute;right:10px;top:10px;z-index:1000}
+    .search {position:absolute;right:10px;top:70px;z-index:1000;width:260px}
+    .search input{width:100%;padding:6px 8px;border:1px solid #ddd;border-radius:4px}
+    .search small{color:#666}
+    .printbtn{position:absolute;left:10px;top:10px;z-index:1000;cursor:pointer}
+    .embedbtn{position:absolute;left:10px;top:52px;z-index:1000;cursor:pointer}
+    .legend i{display:inline-block;width:12px;height:12px;margin-right:6px;vertical-align:middle}
+    .info-popup table{border-collapse:collapse}
+    .info-popup td{padding:2px 6px;border-bottom:1px solid #eee}
+    .info-popup td:first-child{font-weight:600;color:#555}
+    /* Embed panel */
+    .embed-panel{
+      position:absolute;left:10px;top:92px;z-index:1000;background:#fff;padding:10px;
+      border-radius:8px;box-shadow:0 1px 6px rgba(0,0,0,.15);width:380px;display:none
+    }
+    .embed-panel textarea{width:100%;height:110px;border:1px solid #ddd;border-radius:6px;padding:8px;font-family:ui-monospace,Consolas,monospace}
+    .embed-panel .row{display:flex;gap:8px;margin-top:8px}
+    .embed-panel button{padding:6px 10px;border:1px solid #ccc;background:#f7f7f7;border-radius:6px;cursor:pointer}
+    @media (max-width:600px){
+      .search{width:200px}
+      .app-title{font-size:13px}
+      .embed-panel{width:calc(100% - 20px)}
+    }
+  </style>
+</head>
+<body>
+<div id="map"></div>
+
+<!-- Title -->
+<div class="app-title">Melbourne LGAs — UHI, Vegetation %, and Age 65+</div>
+
+<!-- Buttons -->
+<button id="btnPrint" class="printbtn">🖼️ Save PNG</button>
+<button id="btnEmbed" class="embedbtn">🔗 Embed</button>
+<div id="embedPanel" class="embed-panel">
+  <strong>Copy this iframe to embed the map:</strong>
+  <textarea id="iframeCode" readonly></textarea>
+  <div class="row">
+    <button id="copyIframe">Copy</button>
+    <button id="closeEmbed">Close</button>
+  </div>
+  <small>Tip: adjust the <code>height</code> to fit your page (e.g. 600–900px).</small>
+</div>
+
+<!-- Metric selector -->
+<div class="metric">
+  <label><strong>Metric</strong></label><br>
+  <select id="metricSel">
+    <option value="heat">Heat (UHI mean)</option>
+    <option value="veg">Vegetation %</option>
+    <option value="age">Age 65+ (count)</option>
+  </select>
+</div>
+
+<!-- Search -->
+<div class="search">
+  <strong>Find LGA</strong>
+  <input id="searchBox" type="text" placeholder="Type LGA name and press Enter">
+  <small id="searchMsg"></small>
+</div>
+
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script src="https://unpkg.com/leaflet-simple-map-screenshoter@0.7.0/dist/leaflet-simple-map-screenshoter.min.js"></script>
+<script>
+  // ===== CONFIG =====
+  // Your GeoJSON (RAW is best for CORS). Bump ?v=… when you update the file.
+  const RAW_URL   = 'https://raw.githubusercontent.com/Harveynye/melbourne-uhi-app/main/lga_uhi_app.geojson?v=4';
+  const PAGES_URL = 'https://harveynye.github.io/melbourne-uhi-app/lga_uhi_app.geojson?v=4';
+
+  // ===== MAP =====
+  const map = L.map('map', { zoomControl:true }).setView([-37.8, 144.9], 9);
+  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',
+    { attribution: '© OpenStreetMap contributors' }).addTo(map);
+
+  // Print to PNG
+  const screenshoter = L.simpleMapScreenshoter({
+    position:'topleft',
+    hideElementsWithSelectors:['.metric','.legend','.search','.app-title','.embedbtn','#embedPanel']
+  }).addTo(map);
+  document.getElementById('btnPrint').onclick = () => screenshoter.takeScreen('image/png');
+
+  // Metric definitions
+  const metrics = {
+    heat: { field:'uhi18_m_mean', title:'Heat (UHI mean)',
+      breaks:[7.5,8.2,8.9,9.6], colors:['#ffffcc','#ffe082','#fdae61','#f46d43','#d73027'],
+      fmt:v=>v==null?'-':Number(v).toFixed(2)
+    },
+    veg:  { field:'peranyveg_mean', title:'Vegetation %',
+      breaks:[10,20,30,40], colors:['#f7fcf5','#c7e9c0','#74c476','#238b45','#00441b'],
+      fmt:v=>v==null?'-':Number(v).toFixed(2)
+    },
+    age:  { field:'persons_65plus', title:'Age 65+ (count)',
+      breaks:[5000,10000,15000,20000], colors:['#f2f0f7','#cbc9e2','#9e9ac8','#756bb1','#54278f'],
+      fmt:v=>v==null?'-':v
+    }
+  };
+  let current = 'heat';
+
+  // Legend
+  const legendDiv = L.DomUtil.create('div','legend'); legendDiv.id='legend';
+  document.body.appendChild(legendDiv);
+  function colorFor(v, brks, colors){
+    if(v==null) return '#cccccc';
+    for(let i=0;i<brks.length;i++){ if(v<=brks[i]) return colors[i]; }
+    return colors[colors.length-1];
+  }
+  function updateLegend(){
+    const m = metrics[current];
+    const d = document.getElementById('legend');
+    const labels = [];
+    let prev = -Infinity;
+    for(let i=0;i<m.breaks.length;i++){
+      const to = m.breaks[i];
+      labels.push(`<div><i style="background:${m.colors[i]}"></i>${prev===-Infinity?'≤ ':''}${to}</div>`);
+      prev = to;
+    }
+    labels.push(`<div><i style="background:${m.colors[m.colors.length-1]}"></i>&gt; ${m.breaks[m.breaks.length-1]}</div>`);
+    d.innerHTML = `<strong>${m.title}</strong><br>${labels.join('')}`;
+  }
+
+  // Popup content
+  function popupHtml(p){
+    return `
+      <div class="info-popup">
+        <table>
+          <tr><td>LGA</td><td>${p.lga_name ?? '-'}</td></tr>
+          <tr><td>UHI mean</td><td>${metrics.heat.fmt(p.uhi18_m_mean)}</td></tr>
+          <tr><td>Vegetation %</td><td>${metrics.veg.fmt(p.peranyveg_mean)}</td></tr>
+          <tr><td>65+ (count)</td><td>${metrics.age.fmt(p.persons_65plus)}</td></tr>
+        </table>
+      </div>`;
+  }
+
+  // Layer helpers
+  let geojson = null, geoLayer = null, highlight = null;
+
+  function addLayer(){
+    if(geoLayer) map.removeLayer(geoLayer);
+    geoLayer = L.geoJSON(geojson, {
+      style: feat => {
+        const m = metrics[current];
+        const v = feat.properties[m.field];
+        return { color:'#666', weight:0.6, fillOpacity:0.85, fillColor: colorFor(v, m.breaks, m.colors) };
+      },
+      onEachFeature: (feat, layer) => {
+        layer.on('click', () => layer.bindPopup(popupHtml(feat.properties)).openPopup());
+      }
+    }).addTo(map);
+  }
+
+  function restyle(){
+    if(!geoLayer) return;
+    const m = metrics[current];
+    geoLayer.setStyle(feat => {
+      const v = feat.properties[m.field];
+      return { fillColor: colorFor(v, m.breaks, m.colors) };
+    });
+    updateLegend();
+  }
+
+  // Metric dropdown
+  document.getElementById('metricSel').addEventListener('change', e => {
+    current = e.target.value; restyle();
+  });
+
+  // Search by LGA name
+  function findFeatureByName(name){
+    if(!geojson) return null;
+    const needle = name.trim().toLowerCase();
+    if(!needle) return null;
+    const feats = geojson.features || [];
+    let match = feats.find(f => (f.properties.lga_name||'').toLowerCase() === needle);
+    if(!match) match = feats.find(f => (f.properties.lga_name||'').toLowerCase().includes(needle));
+    return match || null;
+  }
+  function flashHighlight(feature){
+    if(highlight) { map.removeLayer(highlight); highlight = null; }
+    highlight = L.geoJSON(feature, { style:{ color:'#222', weight:3, fillOpacity:0 } }).addTo(map);
+    setTimeout(()=>{ if(highlight){ map.removeLayer(highlight); highlight=null; } }, 2500);
+  }
+  const searchBox = document.getElementById('searchBox');
+  const searchMsg = document.getElementById('searchMsg');
+  searchBox.addEventListener('keydown', e=>{
+    if(e.key==='Enter'){
+      const f = findFeatureByName(searchBox.value);
+      if(!f){ searchMsg.textContent = 'No match'; searchMsg.style.color='#b00'; return; }
+      searchMsg.textContent = '';
+      const lyr = L.geoJSON(f);
+      try { map.fitBounds(lyr.getBounds(), { maxZoom: 11 }); } catch(_){}
+      flashHighlight(f);
+      const c = lyr.getBounds().getCenter();
+      L.popup().setLatLng(c).setContent(popupHtml(f.properties)).openOn(map);
+    }
+  });
+
+  // Avoid map scroll while typing
+  ['metricSel','searchBox'].forEach(id=>{
+    const el = document.getElementById(id);
+    L.DomEvent.disableClickPropagation(el);
+    L.DomEvent.disableScrollPropagation(el);
+  });
+
+  // ======== DIAGNOSTIC LOADER ========
+  function diag(msg, ok=false){
+    let b = document.getElementById('diag');
+    if(!b){
+      b = document.createElement('div');
+      b.id = 'diag';
+      b.style.cssText = 'position:absolute;right:10px;bottom:10px;z-index:2000;padding:8px 10px;border-radius:6px;font:13px system-ui;color:#111';
+      document.body.appendChild(b);
+    }
+    b.style.background = ok ? '#e8f5e9' : '#ffebee';
+    b.style.border = ok ? '1px solid #2e7d32' : '1px solid #c62828';
+    b.innerText = msg;
+  }
+
+  async function tryLoad(url){
+    console.log('[GeoJSON] Fetching', url);
+    const r = await fetch(url, {cache:'no-store'});
+    if(!r.ok) throw new Error(`HTTP ${r.status} at ${url}`);
+    const ct = r.headers.get('content-type') || '';
+    if(!ct.includes('application/json') && !ct.includes('geo+json')){
+      console.warn('Content-Type not JSON, got:', ct);
+    }
+    const j = await r.json();
+    if(!j || j.type !== 'FeatureCollection') throw new Error('Invalid GeoJSON: expected FeatureCollection');
+    if(!Array.isArray(j.features)) throw new Error('Invalid GeoJSON: missing features[]');
+    return j;
+  }
+
+  (async ()=>{
+    try{
+      // 1) Try RAW (best CORS)
+      try{
+        geojson = await tryLoad(RAW_URL);
+        diag(`Loaded ${geojson.features.length} features from RAW`, true);
+      }catch(e1){
+        console.warn('RAW load failed:', e1);
+        // 2) Fallback to Pages
+        geojson = await tryLoad(PAGES_URL);
+        diag(`Loaded ${geojson.features.length} features from Pages`, true);
+      }
+
+      // Schema sanity (logs only)
+      const p0 = geojson.features[0]?.properties || {};
+      ['lga_name','uhi18_m_mean','peranyveg_mean','persons_65plus'].forEach(k=>{
+        if(!(k in p0)) console.warn(`[GeoJSON] First feature missing expected property: ${k}`);
+      });
+
+      addLayer(); updateLegend();
+      try { map.fitBounds(L.geoJSON(geojson).getBounds()); } catch(_){}
+
+    }catch(err){
+      console.error('GeoJSON load failed:', err);
+      diag(`GeoJSON load failed: ${err.message}`, false);
+
+      // Show a tiny TEST polygon so styling/popup can still be verified
+      const test = {
+        "type":"FeatureCollection",
+        "features":[{
+          "type":"Feature",
+          "properties":{
+            "lga_name":"TEST CBD",
+            "uhi18_m_mean": 8.7,
+            "peranyveg_mean": 22.5,
+            "persons_65plus": 1234
+          },
+          "geometry":{
+            "type":"Polygon",
+            "coordinates":[[
+              [144.952, -37.821],
+              [144.986, -37.821],
+              [144.986, -37.805],
+              [144.952, -37.805],
+              [144.952, -37.821]
+            ]]
+          }
+        }]}
+      ;
+      geojson = test;
+      addLayer(); updateLegend();
+      try { map.fitBounds(L.geoJSON(test).getBounds()); } catch(_){}
+    }
+  })();
+
+  // ---- EMBED (iframe) helper ----
+  const appUrl = 'https://harveynye.github.io/melbourne-uhi-app/'; // your live URL
+  const iframeSnippet = `<iframe src="${appUrl}" width="100%" height="640" style="border:0;" allowfullscreen></iframe>`;
+  const btnEmbed = document.getElementById('btnEmbed');
+  const panel = document.getElementById('embedPanel');
+  const ta = document.getElementById('iframeCode');
+  const copyBtn = document.getElementById('copyIframe');
+  const closeBtn = document.getElementById('closeEmbed');
+  ta.value = iframeSnippet;
+  btnEmbed.onclick = ()=> panel.style.display = (panel.style.display==='block' ? 'none' : 'block');
+  closeBtn.onclick = ()=> panel.style.display = 'none';
+  copyBtn.onclick = async ()=>{
+    try { await navigator.clipboard.writeText(ta.value); copyBtn.textContent='Copied!'; setTimeout(()=>copyBtn.textContent='Copy',1200); }
+    catch{ alert('Copy failed — select and copy manually.'); }
+  };
+</script>
+
+<!-- Attribution / license -->
+<p style="position:absolute;left:8px;top:52px;background:#fff7;padding:4px 8px;border-radius:6px;">
+  <a href="https://creativecommons.org/licenses/by/4.0/" target="_blank" rel="license noopener">
+    <img src="https://licensebuttons.net/l/by/4.0/88x31.png" alt="CC BY 4.0" style="vertical-align:middle">
+  </a>
+  <span style="margin-left:8px;">This Cloud-based Open-source GIS Application is developed by
+    <a href="https://github.com/Harveynye" target="_blank" rel="noopener">Harvey Nye</a> — CC BY 4.0</span>
+</p>
+</body>
+</html>
